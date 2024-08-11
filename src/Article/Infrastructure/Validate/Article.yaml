@@ -1,0 +1,6 @@
+Owl\Article\Application\Create\CreateArticleRequest:
+  properties:
+    title:
+        - NotBlank: ~
+    comment:
+      - Valid: ~

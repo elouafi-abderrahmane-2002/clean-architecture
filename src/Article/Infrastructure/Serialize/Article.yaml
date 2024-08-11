@@ -1,0 +1,4 @@
+Owl\Article\Application\Create\CreateArticleRequest:
+  attributes:
+    title:
+      ignore: false
