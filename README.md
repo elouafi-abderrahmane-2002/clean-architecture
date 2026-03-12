@@ -1,242 +1,267 @@
-<h1 align="center">
-  Clean Architecture & CQRS with Symfony
-</h1>
-<p align="center">
-    <a href="#"><img src="https://img.shields.io/badge/Symfony-6.2-purple.svg?style=flat-square&logo=symfony" alt="Symfony 6.2"/></a>
-</p>
+# ⚙️ Symfony 6 — Clean Architecture & CQRS
 
-<p align="center">
-  Example of a simple <strong>Symfony application using Clean Architecture and Command Query Responsibility Segregation
-  (CQRS) principles</strong> with some additional functionalities.
-</p>
+CQRS (Command Query Responsibility Segregation) sépare les opérations
+d'écriture (Commands) des opérations de lecture (Queries). En pratique,
+sur une refonte d'application métier, ça permet d'optimiser les lectures
+indépendamment des écritures, de tester chaque flux séparément, et de faire
+évoluer le modèle sans tout recasser.
 
-## Features
+---
 
-1. API with Swagger
-2. Data providers collection/item with resolving relations, filters and DTO mapping.
-3. Bus: Command and Query
-4. Request DTO resolver
-5. Serialization
-6. Validation
+## Principe CQRS appliqué à Symfony
 
-## Installation
-
-### Docker
-
-1. Make sure you have installed Docker on your local machine
-2. Clone this project: `git clone git@github.com:owl-app/clean-architecture.git`
-3. Execute `docker compose up -d` or `make docker-build` in your terminal and wait some time until the services will be ready
-4. Then you will have [API app](apps/api) docs available on http://localhost:8080/api/doc in your browser
-
-### Manually
-```bash
-$ git clone git@github.com:owl-app/clean-architecture.git
-$ cd clean-architecture
-$ wget http://getcomposer.org/composer.phar
-$ php composer.phar install
-$ cp .env .env.local // setup DB
-$ php apps/api/bin/console doctrine:database:create
-$ php apps/api/bin/console doctrine:schema:create
-$ symfony serve --dir=apps/api/public --port=8080
+```
+  Requête entrante
+          │
+          ├── Écriture (POST, PUT, DELETE)
+          │       │
+          │       ▼
+          │   Command (objet immutable)
+          │   CreateArticleCommand { title, content, authorId }
+          │       │
+          │       ▼
+          │   CommandBus → dispatch vers Handler
+          │   CreateArticleHandler::__invoke(CreateArticleCommand)
+          │       │
+          │       ▼
+          │   Modifie le Domain, persiste via Repository
+          │   Retourne : void ou ID
+          │
+          └── Lecture (GET)
+                  │
+                  ▼
+              Query (objet immutable)
+              GetArticleQuery { id }
+                  │
+                  ▼
+              QueryBus → dispatch vers Handler
+              GetArticleHandler::__invoke(GetArticleQuery)
+                  │
+                  ▼
+              Retourne : DTO (pas l'entité Domain)
+              ArticleDto { id, title, content, authorName, createdAt }
 ```
 
-## Project details
+---
 
-A simple application with articles, whose aim is to demonstrate the clean architecture in PHP using CQRS.
-It also includes several useful functionalities that can be used in target production applications.
-
-### Clean Architecture
-
-This structure using also modules and diffrent apps.
-
-#### Api app
-
-```scala
-$ tree -L 4 src
-
-apps
-|-- api
-|    -- src
-|       |-- Controller // Presentation layer
-|       |   |-- Article // Implements uses cases from article applications
-|       |   |   |-- ArticleGetController.php
-|       |   |   |-- ArticleListController.php
-|       |   |   |-- ArticlePostController.php
-```
-
-#### Article module
-
-```scala
-$ tree -L 4 src
-
-src
-|-- Article // Article module
-|    -- Application // Use cases
-|       |-- Create
-|       |   |-- Command // CQRS
-|       |   |   |-- SendEmailNewArticleHandler.php
-|       |   |   |-- SendEmailNewArticle.php
-|       |   |-- ArticleCreator.php
-|       |   |-- CreateArticleRequest.php
-|       |-- Get
-|       |-- List
-|       |-- CommentCreate
-|    -- Domain
-|       |-- Model
-|       |   |-- Article.php
-|       |-- Repository
-|       |   |-- ArticleRepositoryInterface.php
-|    -- Infrastructure
-|       |-- DataProvider
-|       |   |-- ArticleCollectionDataProvider.php // Implementation data provider for list articles
-|       |   |-- ArticleItemDataProvider.php // Implementation data provider for single article
-|       |-- Persistence
-|       |   |-- Doctrine
-|       |   |   |-- Article.orm.xml // Doctrine mapping entity article
-|       |   |-- ArticleRepository.php
-|       |-- Serialize
-|       |   |-- Article.yaml // Serializer mapping article
-|       |-- Validate
-|       |   |-- Article.yaml // Validation mapping article
-```
-
-#### Shared module
-
-```scala
-$ tree -L 4 src
-
-src
-|-- Shared // Elements of application that are shared between various types of modules
-|    -- Application
-|       |-- Dto
-|       |   |-- RequestDtoInterface.php // DTO to auto resolve from request
-|    -- Domain
-|       |-- Bus
-|       |-- DataProvider // Logic for collection/item data provider
-|       |-- Persistence
-|    -- Infrastructure
-|       |-- Bus // Implementation for command and query bus
-|       |-- DataProvider
-|       |-- |-- Orm // Implementation for Doctrine data providers
-|       |-- Persistence
-|       |   |-- Doctrine // Implementations for Doctrine elements (Repository etc)
-|       |-- Symfony // Implementations for various elements of application (e.g. Request DTO resolver)
-```
-## Examples
-
-### Query Bus data provider with mapper
-
-Example of usage query bus collection data provider with mapper.
+## Implémentation du Command Bus (Symfony Messenger)
 
 ```php
-<?php
-
-declare(strict_types=1);
-
-namespace Owl\Apps\Api\Controller\Article;
-
-use OpenApi\Attributes as OA;
-use Nelmio\ApiDocBundle\Annotation\Model;
-use Owl\Article\Application\List\ArtliceListMapper;
-use Owl\Article\Domain\Model\Article;
-use Owl\Article\Infrastructure\DataProvider\ArticleCollectionDataProvider;
-use Owl\Shared\Domain\DataProvider\Request\CollectionRequestParams;
-use Owl\Shared\Infrastructure\DataProvider\Orm\Bus\Query\CollectionQuery;
-use Owl\Shared\Infrastructure\Symfony\ApiController;
-use Symfony\Component\HttpFoundation\JsonResponse;
-
-final class ArticleListController extends ApiController
+// Shared/Domain/Bus/CommandBusInterface.php
+interface CommandBusInterface
 {
-    #[OA\Get(
-        summary: "List articles",
-    )]
-    #[OA\Response(
-        response: 200,
-        description: 'Successful response',
-        content: new OA\JsonContent(
-            type: 'array',
-            items: new OA\Items(ref: new Model(type: Article::class))
-        )
-    )]
-    #[OA\Parameter(
-        name: "filters[search][type]",
-        in: "query",
-        description: "Type search",
-        required: false,
-        schema: new OA\Schema(
-            enum: ['equal'],
-        )
-    )]
-    #[OA\Parameter(
-        name: "filters[search][value]",
-        in: "query",
-        description: "Value ",
-        required: false
-    )]
-    #[OA\Tag(name: 'Articles', description: 'Articles in system')]
-    public function __invoke(CollectionRequestParams $collectionRequestParams): JsonResponse
+    public function dispatch(object $command): mixed;
+}
+
+// Shared/Infrastructure/Bus/SymfonyCommandBus.php
+final readonly class SymfonyCommandBus implements CommandBusInterface
+{
+    public function __construct(
+        private MessageBusInterface $bus
+    ) {}
+
+    public function dispatch(object $command): mixed
     {
-        $data = $this->query(new CollectionQuery(
-            Article::class,
-            new ArticleCollectionDataProvider(),
-            $collectionRequestParams,
-            new ArtliceListMapper()
+        try {
+            $envelope = $this->bus->dispatch($command);
+            $stamps   = $envelope->last(HandledStamp::class);
+            return $stamps?->getResult();
+        } catch (HandlerFailedException $e) {
+            // Déballer l'exception originale (pas l'enveloppe Messenger)
+            throw $e->getNestedExceptions()[0];
+        }
+    }
+}
+
+// config/services.yaml
+services:
+    App\Shared\Domain\Bus\CommandBusInterface:
+        alias: App\Shared\Infrastructure\Bus\SymfonyCommandBus
+
+    App\Shared\Domain\Bus\QueryBusInterface:
+        alias: App\Shared\Infrastructure\Bus\SymfonyQueryBus
+```
+
+---
+
+## Command + Handler — création d'un article
+
+```php
+// Article/Application/Command/CreateArticleCommand.php
+final readonly class CreateArticleCommand
+{
+    public function __construct(
+        public string $title,
+        public string $content,
+        public string $authorId,
+    ) {}
+}
+
+// Article/Application/Handler/CreateArticleHandler.php
+#[AsMessageHandler]
+final readonly class CreateArticleHandler
+{
+    public function __construct(
+        private ArticleRepositoryInterface $articles,
+        private AuthorRepositoryInterface  $authors,
+    ) {}
+
+    public function __invoke(CreateArticleCommand $command): string
+    {
+        $author = $this->authors->findById($command->authorId)
+            ?? throw new AuthorNotFoundException($command->authorId);
+
+        $article = Article::create(
+            id:      ArticleId::generate(),
+            title:   $command->title,
+            content: $command->content,
+            author:  $author,
+        );
+
+        $this->articles->save($article);
+        return $article->getId()->value();
+    }
+}
+```
+
+---
+
+## Query + DTO — lecture optimisée
+
+```php
+// Article/Application/Query/GetArticlesQuery.php
+final readonly class GetArticlesQuery
+{
+    public function __construct(
+        public int    $page   = 1,
+        public int    $limit  = 20,
+        public string $search = '',
+    ) {}
+}
+
+// Article/Application/Dto/ArticleListDto.php
+// DTO de lecture : pas l'entité Domain — structure optimisée pour l'affichage
+final readonly class ArticleListDto
+{
+    public function __construct(
+        public string $id,
+        public string $title,
+        public string $authorName,    // dénormalisé : évite une jointure côté client
+        public string $createdAtAgo,  // formattage côté serveur
+        public int    $viewCount,
+    ) {}
+}
+
+// Article/Application/Handler/GetArticlesHandler.php
+#[AsMessageHandler]
+final readonly class GetArticlesHandler
+{
+    public function __construct(
+        private ArticleReadRepositoryInterface $readRepo
+    ) {}
+
+    public function __invoke(GetArticlesQuery $query): array
+    {
+        // Le read repository peut utiliser une vue SQL optimisée
+        // indépendamment du write model (CQRS complet)
+        return $this->readRepo->findPaginated(
+            page:   $query->page,
+            limit:  $query->limit,
+            search: $query->search
+        );
+    }
+}
+```
+
+---
+
+## Controller — mince, délègue au Bus
+
+```php
+// Article/Infrastructure/Api/ArticleController.php
+#[Route('/api/articles')]
+final class ArticleController extends AbstractController
+{
+    public function __construct(
+        private readonly CommandBusInterface $commands,
+        private readonly QueryBusInterface   $queries,
+    ) {}
+
+    #[Route('', methods: ['GET'])]
+    public function list(Request $request): JsonResponse
+    {
+        $articles = $this->queries->dispatch(new GetArticlesQuery(
+            page:   (int) $request->query->get('page', 1),
+            limit:  (int) $request->query->get('limit', 20),
+            search: $request->query->get('search', ''),
         ));
+        return $this->json($articles);
+    }
 
-        return $this->responseJson($data);
+    #[Route('', methods: ['POST'])]
+    #[IsGranted('ROLE_AUTHOR')]
+    public function create(Request $request): JsonResponse
+    {
+        $data = $request->toArray();
+        $id = $this->commands->dispatch(new CreateArticleCommand(
+            title:    $data['title']    ?? throw new BadRequestHttpException('title requis'),
+            content:  $data['content']  ?? throw new BadRequestHttpException('content requis'),
+            authorId: $this->getUser()->getId(),
+        ));
+        return $this->json(['id' => $id], 201);
     }
 }
 ```
 
-### Data providers
+---
 
-Example of usage collection data provider.
+## Tests PHPUnit — couverture Command + Query
 
 ```php
-<?php
-
-declare(strict_types=1);
-
-namespace Owl\Article\Infrastructure\DataProvider;
-
-use Owl\Article\Application\List\ArticleCollectionDataProviderInterface;
-use Owl\Shared\Domain\DataProvider\Builder\FilterBuilderInterface;
-use Owl\Shared\Domain\DataProvider\Builder\SortBuilderInterface;
-use Owl\Shared\Domain\DataProvider\Builder\PaginationBuilderInterface;
-use Owl\Shared\Infrastructure\DataProvider\Orm\Type\AbstractCollectionType;
-use Owl\Shared\Infrastructure\DataProvider\Orm\Filter\StringFilter;
-use Owl\Shared\Infrastructure\DataProvider\Orm\Type\BuildableQueryBuilderInterface;
-
-final class ArticleCollectionDataProvider extends AbstractCollectionType implements BuildableQueryBuilderInterface, ArticleCollectionDataProviderInterface
+class CreateArticleHandlerTest extends TestCase
 {
-    public function buildQueryBuilder(QueryBuilder $queryBuilder): void
+    public function testCreatesArticleAndPersists(): void
     {
-        $queryBuilder->select('partial o.{id,title,description}');
+        $authorRepo  = $this->createMock(AuthorRepositoryInterface::class);
+        $articleRepo = $this->createMock(ArticleRepositoryInterface::class);
+
+        $author = Author::create(AuthorId::generate(), 'Test Author');
+        $authorRepo->method('findById')->willReturn($author);
+        $articleRepo->expects($this->once())->method('save')
+            ->with($this->isInstanceOf(Article::class));
+
+        $handler = new CreateArticleHandler($articleRepo, $authorRepo);
+        $id = ($handler)(new CreateArticleCommand('Titre', 'Contenu', $author->getId()->value()));
+
+        $this->assertNotEmpty($id);
     }
 
-    public function buildFilters(FilterBuilderInterface $filterBuilder): void
+    public function testThrowsIfAuthorNotFound(): void
     {
-        $filterBuilder
-            ->add('search', StringFilter::class, ['title', 'description'])
-        ;
-    }
+        $authorRepo  = $this->createMock(AuthorRepositoryInterface::class);
+        $articleRepo = $this->createMock(ArticleRepositoryInterface::class);
+        $authorRepo->method('findById')->willReturn(null);
 
-    public function buildSort(SortBuilderInterface $sortBuilder): void
-    {
-        $sortBuilder
-            ->setParamName('sort')
-            ->setAvailable(['id', 'title'])
-        ;
-    }
-
-    public function buildPagination(PaginationBuilderInterface $paginationBuilder): void
-    {
-        $paginationBuilder
-            ->setAllowedPerPage([10,25,50,100])
-        ;
+        $this->expectException(AuthorNotFoundException::class);
+        $handler = new CreateArticleHandler($articleRepo, $authorRepo);
+        ($handler)(new CreateArticleCommand('T', 'C', 'unknown-id'));
     }
 }
 ```
-## Resources
-- [CodelyTV/php-ddd-example](https://github.com/CodelyTV/php-ddd-example)
-- [API Platform](https://api-platform.com)
+
+---
+
+## Ce que j'ai appris
+
+Sur un projet de refonte, le CQRS évite un piège classique : le modèle
+d'écriture (normalisé pour l'intégrité) est souvent mauvais pour la lecture
+(trop de jointures, trop de champs inutiles). Avoir deux modèles distincts
+permet d'optimiser chacun indépendamment — lecture via une vue SQL dénormalisée,
+écriture via le Domain pur. Sur Hermes 2, cette séparation serait particulièrement
+utile si l'application a des écrans de consultation fréquents et des workflows
+d'écriture complexes.
+
+---
+
+*Projet réalisé dans le cadre de ma formation ingénieur — ENSET Mohammedia*
+*Par **Abderrahmane Elouafi** · [LinkedIn](https://www.linkedin.com/in/abderrahmane-elouafi-43226736b/) · [Portfolio](https://my-first-porfolio-six.vercel.app/)*
